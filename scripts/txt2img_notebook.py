@@ -32,24 +32,6 @@ def get_device():
     else:
         return 'cpu'
 
-
-def chunk(it, size):
-    it = iter(it)
-    return iter(lambda: tuple(islice(it, size)), ())
-
-
-def numpy_to_pil(images):
-    """
-    Convert a numpy image or a batch of images to a PIL image.
-    """
-    if images.ndim == 3:
-        images = images[None, ...]
-    images = (images * 255).round().astype("uint8")
-    pil_images = [Image.fromarray(image) for image in images]
-
-    return pil_images
-
-
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
     pl_sd = t.load(ckpt, map_location="cpu")
@@ -68,25 +50,6 @@ def load_model_from_config(config, ckpt, verbose=False):
     model.to(get_device())
     model.eval()
     return model
-
-
-def put_watermark(img, wm_encoder=None):
-    if wm_encoder is not None:
-        img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        img = wm_encoder.encode(img, 'dwtDct')
-        img = Image.fromarray(img[:, :, ::-1])
-    return img
-
-
-def load_replacement(x):
-    try:
-        hwc = x.shape
-        y = Image.open("assets/rick.jpeg").convert("RGB").resize((hwc[1], hwc[0]))
-        y = (np.array(y)/255.0).astype(x.dtype)
-        assert y.shape == x.shape
-        return y
-    except Exception:
-        return x
 
 # %%
 if MAIN:
@@ -115,44 +78,44 @@ if MAIN:
         seed = 42
         precision = ""
 
-    opt = StableDiffusionConfig()
+    cfg = StableDiffusionConfig()
 
-    if opt.laion400m:
+    if cfg.laion400m:
         print("Falling back to LAION 400M model...")
-        opt.config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
-        opt.ckpt = "models/ldm/text2img-large/model.ckpt"
-        opt.outdir = "outputs/txt2img-samples-laion400m"
+        cfg.config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
+        cfg.ckpt = "models/ldm/text2img-large/model.ckpt"
+        cfg.outdir = "outputs/txt2img-samples-laion400m"
 
-    seed_everything(opt.seed)
+    seed_everything(cfg.seed)
 
-    config = OmegaConf.load(f"{opt.config}")
-    model = load_model_from_config(config, f"{opt.ckpt}")
+    config = OmegaConf.load(f"{cfg.config}")
+    model = load_model_from_config(config, f"{cfg.ckpt}")
 
     device = t.device(get_device())
     model = model.to(device)
 
-    if opt.plms:
+    if cfg.plms:
         sampler = PLMSSampler(model)
     else:
         sampler = DDIMSampler(model)
 
-    os.makedirs(opt.outdir, exist_ok=True)
-    outpath = opt.outdir
+    os.makedirs(cfg.outdir, exist_ok=True)
+    outpath = cfg.outdir
 
-    batch_size = opt.n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
+    batch_size = cfg.n_samples
+    n_rows = cfg.n_rows if cfg.n_rows > 0 else batch_size
 
     sample_path = os.path.join(outpath, "samples")
     os.makedirs(sample_path, exist_ok=True)
     base_count = len(os.listdir(sample_path))
 
     start_code = None
-    if opt.fixed_code:
+    if cfg.fixed_code:
         start_code = t.randn(
-            [opt.n_samples, opt.C, opt.height // opt.f, opt.weight // opt.f], device="cpu"
+            [cfg.n_samples, cfg.C, cfg.height // cfg.f, cfg.weight // cfg.f], device="cpu"
         ).to(t.device(device))
 
-    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    precision_scope = autocast if cfg.precision=="autocast" else nullcontext
     if device.type == 'mps':
         print('Using mps backend')
         precision_scope = nullcontext # have to use f32 on mps
@@ -167,26 +130,26 @@ def txt2img(prompt: str) -> "list[Image.Image]":
                 all_samples = list()
                 for prompts in tqdm(data, desc="data"):
                     uc = None
-                    if opt.scale != 1.0:
+                    if cfg.scale != 1.0:
                         uc = model.get_learned_conditioning(batch_size * [""])
                     if isinstance(prompts, tuple):
                         prompts = list(prompts)
                     c = model.get_learned_conditioning(prompts)
-                    shape = [opt.C, opt.height // opt.f, opt.weight // opt.f]
-                    samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
+                    shape = [cfg.C, cfg.height // cfg.f, cfg.weight // cfg.f]
+                    samples_ddim, _ = sampler.sample(S=cfg.ddim_steps,
                                                         conditioning=c,
-                                                        batch_size=opt.n_samples,
+                                                        batch_size=cfg.n_samples,
                                                         shape=shape,
                                                         verbose=False,
-                                                        unconditional_guidance_scale=opt.scale,
+                                                        unconditional_guidance_scale=cfg.scale,
                                                         unconditional_conditioning=uc,
-                                                        eta=opt.ddim_eta,
+                                                        eta=cfg.ddim_eta,
                                                         x_T=start_code)
 
                     x_samples_ddim = model.decode_first_stage(samples_ddim)
                     x_samples_ddim = t.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                     x_samples_ddim = x_samples_ddim.cpu()
-                    if not opt.skip_save:
+                    if not cfg.skip_save:
                         for x_sample in x_samples_ddim:
                             x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                             img = Image.fromarray(x_sample.astype(np.uint8))
